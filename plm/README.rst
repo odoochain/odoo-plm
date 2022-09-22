@@ -9,6 +9,12 @@ Moreover, it adds many reports and views on Bill of Materials or related to them
 
 New functionality Compare BoMs helps to understand differences between Bill of Materials.
 
+该应用程序使一群人能够直接从 CAD 编辑器智能高效地管理 3D 模型和 2D 工程图。它管理产品和文档的基本修订，通过对文档的访问策略帮助在并发工程中工作。
+
+此外，它还添加了许多关于物料清单或与之相关的报告和意见。
+
+它有助于使用嵌入的 PDF 共享 2D 文档。新功能比较物料清单有助于了解物料清单之间的差异。
+
 Key Features :
 --------------
 
