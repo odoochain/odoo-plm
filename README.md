@@ -11,3 +11,7 @@ at the same address you can also find more information regarding the solution
 
 documentation can be found at:
 https://odooplm.omniasolutions.website/
+
+pip install cadquery2 -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+pip install numpy-stl -i https://pypi.tuna.tsinghua.edu.cn/simple

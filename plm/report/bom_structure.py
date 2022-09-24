@@ -202,7 +202,8 @@ class ReportBomStructureOne(models.AbstractModel):
 
     @api.model
     def render_html(self, docids, data=None):
-        report_obj = self.env['report']
+
+        report_obj = self.env.ref['plm.bom_structure_one']
         report = report_obj._get_report_from_name('plm.bom_structure_one')
         docargs = {
             'doc_model': report.model,
@@ -232,7 +233,7 @@ class ReportBomStructureAllSum(models.AbstractModel):
 
     @api.model
     def render_html(self, docids, data=None):
-        report_obj = self.env['report']
+        report_obj = self.env.ref['report']
         report = report_obj._get_report_from_name('plm.bom_structure_all_sum')
         docargs = {
             'doc_model': report.model,
@@ -262,7 +263,7 @@ class ReportBomStructureOneSum(models.AbstractModel):
 
     @api.model
     def render_html(self, docids, data=None):
-        report_obj = self.env['report']
+        report_obj = self.env.ref['report']
         report = report_obj._get_report_from_name('plm.bom_structure_one_sum')
         docargs = {
             'doc_model': report.model,
@@ -292,7 +293,7 @@ class ReportBomStructureLevels(models.AbstractModel):
 
     @api.model
     def render_html(self, docids, data=None):
-        report_obj = self.env['report']
+        report_obj = self.env.ref['report']
         report = report_obj._get_report_from_name('plm.bom_structure_leaves')
         docargs = {
             'doc_model': report.model,
@@ -322,7 +323,7 @@ class ReportBomStructureFlat(models.AbstractModel):
 
     @api.model
     def render_html(self, docids, data=None):
-        report_obj = self.env['report']
+        report_obj = self.env.ref['report']
         report = report_obj._get_report_from_name('plm.bom_structure_flat')
         docargs = {
             'doc_model': report.model,
