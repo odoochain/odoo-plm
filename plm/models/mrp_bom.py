@@ -722,23 +722,27 @@ class MrpBomExtension(models.Model):
             return self.env['mrp.bom.line'].create(copy.deepcopy(relation_attributes))
 
     def open_related_bom_lines(self):
-        for bom_brws in self:
-            def recursion(bom_brws_list):
-                out_bom_lines = []
-                for bom_brws in bom_brws_list:
-                    line_brws_list = bom_brws.bom_line_ids
-                    out_bom_lines.extend(line_brws_list.ids)
-                    for line_brws in line_brws_list:
-                        boms_found = self.search([
-                            ('product_tmpl_id', '=', line_brws.product_id.product_tmpl_id.id),
-                            ('type', '=', line_brws.type),
-                            ('active', '=', True)
-                        ])
-                        bottom_line_ids = recursion(boms_found)
-                        out_bom_lines.extend(bottom_line_ids)
-                return out_bom_lines
+        computed = []
+        def recursion(bom_brws_list):
+            out_bom_lines = []
+            for mrp_bom_id in bom_brws_list:
+                if mrp_bom_id.id in computed:
+                    continue
+                computed.append(mrp_bom_id.id)
+                line_brws_list = mrp_bom_id.bom_line_ids
+                out_bom_lines.extend(line_brws_list.ids)
+                for line_brws in line_brws_list:
+                    boms_found = self.search([
+                        ('product_tmpl_id', '=', line_brws.product_id.product_tmpl_id.id),
+                        ('type', '=', line_brws.type),
+                        ('active', '=', True)
+                    ])
+                    bottom_line_ids = recursion(boms_found)
+                    out_bom_lines.extend(bottom_line_ids)
+            return out_bom_lines
 
-            bom_line_ids = recursion(self)
+        for mrp_bom_id in self:
+            bom_line_ids = recursion(mrp_bom_id)
             return {'name': _('B.O.M. Lines'),
                     'res_model': 'mrp.bom.line',
                     'view_type': 'form',
@@ -759,6 +763,27 @@ class MrpBomExtension(models.Model):
                 'domain': [('id', 'in', bom_ids.ids)],
                 'context': {}}
 
+    def saveRelationNewGetBom(self, product_tmpl_id, bomType, parent_product_product_id):
+        prod_template = self.env['product.template'].browse(product_tmpl_id)
+        if parent_product_product_id.kit_bom:
+            bomType = 'phantom'
+        elif prod_template.kit_bom:
+            bomType = 'phantom'
+        elif parent_product_product_id.categ_id.kit_bom:
+            bomType = 'phantom'
+        elif prod_template.categ_id.kit_bom:
+            bomType = 'phantom'
+        mrp_bom_found_id = self.env['mrp.bom']
+        for mrp_bom_id in self.search([('product_tmpl_id', '=', product_tmpl_id),
+                                       ('type', '=', bomType)]):
+            mrp_bom_found_id = mrp_bom_id
+        if not mrp_bom_found_id:
+            if product_tmpl_id:
+                mrp_bom_found_id = self.create({'product_tmpl_id': product_tmpl_id,
+                                                'product_id': parent_product_product_id.id,
+                                                'type': bomType})
+        return mrp_bom_found_id
+
     @api.model
     def saveRelationNew(self,
                         clientArgs):
@@ -778,16 +803,8 @@ class MrpBomExtension(models.Model):
             product_tmpl_id = parent_product_product_id.product_tmpl_id.id
             ir_attachment_relation.removeChildRelation(parent_ir_attachment_id)  # perform default unlink to HiTree, need to perform RfTree also
             ir_attachment_relation.removeChildRelation(parent_ir_attachment_id, linkType='RfTree')
-            mrp_bom_found_id = self.env['mrp.bom']
-            for mrp_bom_id in self.search([('product_tmpl_id', '=', product_tmpl_id),
-                                           ('type', '=', bomType)]):
-                mrp_bom_found_id = mrp_bom_id
-            if not mrp_bom_found_id:
-                if product_tmpl_id:
-                    mrp_bom_found_id = self.create({'product_tmpl_id': product_tmpl_id,
-                                                    'product_id': parent_product_product_id.id,
-                                                    'type': bomType})
-            else:
+            mrp_bom_found_id = self.saveRelationNewGetBom(product_tmpl_id, bomType, parent_product_product_id)
+            if mrp_bom_found_id:
                 mrp_bom_found_id.delete_child_row(parent_ir_attachment_id)
             #
             # add rows
@@ -813,8 +830,10 @@ class MrpBomExtension(models.Model):
                                                                ir_attachment_id,
                                                                link_kind=link_kind)
                 if l_tree_document_id and product_product_id:
+                    if link_kind == 'LyTree':
+                        ir_attachment_id = l_tree_document_id
                     self.env['plm.component.document.rel'].createFromIds(self.env['product.product'].browse(product_product_id),
-                                                                         self.env['ir.attachment'].browse(l_tree_document_id))
+                                                                         self.env['ir.attachment'].browse(ir_attachment_id))
             if not mrp_bom_found_id.bom_line_ids:
                 mrp_bom_found_id.unlink()
             return True

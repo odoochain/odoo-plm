@@ -51,17 +51,20 @@ class ProductTemplateExtension(models.Model):
     engineering_material = fields.Char(_('Cad Raw Material'),
                                        size=128,
                                        required=False,
+                                       copy=True,
                                        help=_("Raw material for current product, only description for titleblock."))
     engineering_surface = fields.Char(
         _('Cad Surface Finishing'),
         size=128,
         required=False,
+        copy=True,
         help=_("Surface finishing for current product, only description for titleblock.")
     )
 
     engineering_treatment = fields.Char(_('Cad Termic Treatment'),
                                         size=128,
                                         required=False,
+                                        copy=True,
                                         help=_("Termic treatment for current product, only description for titleblock."))
 
     engineering_revision = fields.Integer(_('Revision'),
@@ -91,20 +94,23 @@ class ProductTemplateExtension(models.Model):
 
     engineering_writable = fields.Boolean(_('Writable'),
                                           default=True)
-    is_engcode_editable = fields.Boolean(_('Engineering Editable'), default=True, compute='_compute_eng_code_editable')
+
+    is_engcode_editable = fields.Boolean(_('Engineering Editable'),
+                                         default=True,
+                                         compute='_compute_eng_code_editable')
 
     revision_count = fields.Integer(compute='_revisions_count')
+    kit_bom = fields.Boolean(_('KIT Bom Type'))
 
     _sql_constraints = [
         ('partnumber_uniq', 'unique (engineering_code,engineering_revision)', _('Part Number has to be unique!'))
     ]
-
+        
     def isLastVersion(self):
         for tempate_id in self:
             if tempate_id.id in tempate_id._getlastrev():
                 return True
-            return False
-        
+            return False       
         
     def _getlastrev(self):
         result = []
@@ -225,6 +231,9 @@ class ProductTemplateExtension(models.Model):
         objId = super(ProductTemplateExtension, self).copy(default)
         if objId:
             objId.is_engcode_editable = True
+            objId.product_variant_id.tmp_material = self.product_variant_id.tmp_material.id
+            objId.product_variant_id.tmp_surface = self.product_variant_id.tmp_surface.id
+            objId.product_variant_id.tmp_treatment = self.product_variant_id.tmp_treatment.id
         return objId
 
     @api.model

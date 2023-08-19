@@ -20,7 +20,7 @@
 ##############################################################################
 {
     "name": "Product Lifecycle Management",
-    "version": "15.0.5",
+    "version": "15.0.8",
     "author": "OmniaSolutions",
     "website": "https://github.com/OmniaGit/odooplm",
     "category": "Manufacturing/Product Lifecycle Management",
@@ -48,6 +48,7 @@
         "views/plm_material_view.xml",
         "views/product_product.xml",
         "views/product_template.xml",
+        "views/product_category.xml",
         "views/ir_config_parameter.xml",
         "views/ir_cron.xml",
         "views/plm_cad_open.xml",

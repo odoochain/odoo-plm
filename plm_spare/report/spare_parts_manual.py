@@ -38,8 +38,8 @@ from odoo import api
 from odoo import models
 from odoo.tools import DEFAULT_SERVER_DATETIME_FORMAT
 
-from odoo.addons.plm.report.book_collector import BookCollector
-from odoo.addons.plm.report.book_collector import getBottomMessage
+from odoo.addons.plm.models.utils import packDocuments
+from odoo.addons.plm.models.utils import BookCollector
 from dateutil import tz
 
 
@@ -127,7 +127,7 @@ class ReportSpareDocumentOne(models.AbstractModel):
     """
 
     @api.model
-    def create_spare_pdf(self, components):
+    def _create_spare_pdf(self, components):
         recursion = True
         if self._name == 'report.plm_spare.pdf_one':
             recursion = False
@@ -164,7 +164,14 @@ class ReportSpareDocumentOne(models.AbstractModel):
             main_book_collector.collector.write(pdf_string)
             out = pdf_string.getvalue()
             pdf_string.close()
-            byte_string = b"data:application/pdf;base64," + base64.b64encode(out)
+            return out
+        return ''
+
+    @api.model
+    def create_spare_pdf(self, components):
+        stream = self._create_spare_pdf(components)
+        if stream:
+            byte_string = b"data:application/pdf;base64," + base64.b64encode(stream)
             return byte_string.decode('UTF-8')
         logging.warning('Unable to create PDF')
         return False, ''
@@ -196,19 +203,23 @@ class ReportSpareDocumentOne(models.AbstractModel):
                         except Exception as ex:
                             logging.error(ex)
                             raise ex
-                    pdf = self.env.ref('plm.report_plm_bom_structure_one').sudo().with_context(force_report_rendering=True)._render_qweb_pdf(bom_brws_ids.ids)[0]
+                    report_ref = self.env.ref('plm.report_plm_bom_structure_one')
+                    pdf = report_ref.sudo().with_context(force_report_rendering=True)._render_qweb_pdf(bom_brws_ids.ids)[0]
                     page_stream = BytesIO()
                     page_stream.write(pdf)
                     output.addPage((page_stream, ''))
                     if recursion:
-                        for packed_obj in product_ids:
-                            if packed_obj.id not in processed_objs:
-                                processed_objs += self.get_spare_parts_pdf_file(packed_obj,
-                                                                                output,
-                                                                                component_template,
-                                                                                bom_template,
-                                                                                recursion,
-                                                                                processed_objs)
+                        ln = len(product_ids)
+                        for i, packed_obj in enumerate(product_ids,1):
+                            logging.info("Work on %s/%s - %s %s" % (i, ln, product.name, packed_obj.name))
+                            processed = self.get_spare_parts_pdf_file(packed_obj,
+                                                                      output,
+                                                                      component_template,
+                                                                      bom_template,
+                                                                      recursion,
+                                                                      processed_objs)
+                            processed_objs+=processed
+                            processed_objs=list(set(processed_objs))
         return processed_objs
 
     def get_pdf_component_layout(self, component):
@@ -226,7 +237,8 @@ class ReportSpareDocumentOne(models.AbstractModel):
 
     def get_first_page(self, ids):
         str_buffer = BytesIO()
-        pdf = self.env.ref('plm_spare.report_product_product_spare_header').sudo().with_context(force_report_rendering=True)._render_qweb_pdf(ids)[0]
+        report_ref = self.env.ref('plm_spare.report_product_product_spare_header')
+        pdf = report_ref.sudo().with_context(force_report_rendering=True)._render_qweb_pdf(ids)[0]
         str_buffer.write(pdf)
         return str_buffer
 

@@ -106,14 +106,17 @@ class PlmComponent(models.Model):
     tmp_material = fields.Many2one('plm.material',
                                    _('Raw Material'),
                                    required=False,
+                                   copy=True,
                                    help=_("Select raw material for current product"))
     tmp_surface = fields.Many2one('plm.finishing',
                                   _('Surface Finishing'),
                                   required=False,
+                                  copy=True,
                                   help=_("Select surface finishing for current product"))
     tmp_treatment = fields.Many2one('plm.treatment',
                                     _('Termic Treatment'),
                                     required=False,
+                                    copy=True,
                                     help=_("Select termic treatment for current product"))
     father_part_ids = fields.Many2many('product.product',
                                        compute=_father_part_compute,
@@ -127,16 +130,20 @@ class PlmComponent(models.Model):
                                       _('Standard Description'),
                                       required=False,
                                       default=False,
+                                      copy=True,
                                       help=_("Select standard description for current product."))
     std_umc1 = fields.Char(_('UM / Feature 1'),
                            size=32,
                            default='',
+                           copy=True,
                            help=_("Allow to specify a unit measure for the first feature."))
     std_value1 = fields.Float(_('Value 1'),
                               default=0,
+                              copy=True,
                               help=_("Assign value to the first characteristic."))
     std_umc2 = fields.Char(_('UM / Feature 2'),
                            size=32,
+                           copy=True,
                            default='',
                            help=_("Allow to specify a unit measure for the second feature."))
     std_value2 = fields.Float(_('Value 2'),
@@ -144,10 +151,12 @@ class PlmComponent(models.Model):
                               help=_("Assign value to the second characteristic."))
     std_umc3 = fields.Char(_('UM / Feature 3'),
                            size=32,
+                           copy=True,
                            default='',
                            help=_("Allow to specifiy a unit measure for the third feature."))
     std_value3 = fields.Float(_('Value 3'),
                               default=0,
+                              copy=True,
                               help=_("Assign value to the second characteristic."))
 
     desc_modify = fields.Text(_('Modification Description'), default='')
@@ -164,18 +173,31 @@ class PlmComponent(models.Model):
     revision_date = fields.Datetime(string=_('Datetime Revision'))
     
     show_std_field1 = fields.Boolean(_('Show std field 1'),
-                                 compute='_showStd')
+                                 compute='_computeStd')
     show_std_field2 = fields.Boolean(_('Show std field 2'),
-                                 compute='_showStd')
+                                 compute='_computeStd')
     show_std_field3 = fields.Boolean(_('Show std field 3'),
-                                 compute='_showStd')
+                                 compute='_computeStd')
 
     
     readonly_std_umc1 = fields.Boolean(_("put readOnly the field standard description 1"))
     readonly_std_umc2 = fields.Boolean(_("put readOnly the field standard description 2"))
     readonly_std_umc3 = fields.Boolean(_("put readOnly the field standard description 3"))
-    
-    
+    kit_bom = fields.Boolean(_('KIT Bom Type'))
+
+    def _computeStd(self):
+        for product_product_id in self:
+            product_product_id.show_std_field1 = False
+            product_product_id.show_std_field2 = False
+            product_product_id.show_std_field3 = False
+            if product_product_id.std_description:
+                if product_product_id.std_description.umc1 or product_product_id.std_description.fmt1:
+                    product_product_id.show_std_field1 = True
+                if product_product_id.std_description.umc2 or product_product_id.std_description.fmt2:
+                    product_product_id.show_std_field2 = True
+                if product_product_id.std_description.umc3 or product_product_id.std_description.fmt3:
+                    product_product_id.show_std_field3 = True
+                        
     @api.onchange("std_description")
     def _showStd(self):
         for product_product_id in self:
@@ -236,10 +258,33 @@ class PlmComponent(models.Model):
 
     @api.onchange('std_value1', 'std_value2', 'std_value3', 'std_umc1','std_umc2','std_umc3')
     def on_change_stdvalue(self):
-        if self.std_description:
-            if self.std_description.description:
-                self.name = self.computeDescription(self.std_description, self.std_description.description, self.std_umc1, self.std_umc2, self.std_umc3, self.std_value1, self.std_value2, self.std_value3)
+        for product_product_id in self:
+            if product_product_id.std_description:
+                if product_product_id.std_description.description:
+                    product_product_id.name = product_product_id.get_str_description()
+                
+    def get_str_description(self):
+        for product_id in self:
+            name_out = product_id.product_tmpl_id.name
+            try:
+                if product_id.std_description:
+                    tmp_name_out =  product_id.computeDescription(self.std_description,
+                                            self.std_description.description,
+                                            self.std_umc1,
+                                            self.std_umc2,
+                                            self.std_umc3,
+                                            self.std_value1,
+                                            self.std_value2,
+                                            self.std_value3) 
+                    if tmp_name_out and len(str(tmp_name_out).strip())>0:
+                        return tmp_name_out
+                    else:
+                        return product_id.std_description.name
+            except Exception as ex:
+                logging.error(ex)
+            return name_out
 
+            
     @api.onchange('tmp_material')
     def on_change_tmpmater(self):
         if self.tmp_material:
@@ -270,6 +315,17 @@ class PlmComponent(models.Model):
                         mrpBomLine.bom_id.get_where_used_structure(filterBomType)))
         return out
 
+    def getParentBom(self, filterBomType='normal'):
+        for product_product_id in self:
+            bom_line_filter = [('product_id', '=', product_product_id.id),
+                               ('type', '=', filterBomType)]
+
+            mrp_bom_line_ids = self.env['mrp.bom.line'].search(bom_line_filter,
+                                                               limit=1)
+            for mrp_bom_line_id in mrp_bom_line_ids:
+                return mrp_bom_line_id.bom_id
+        return self.env['mrp.bom']
+    
     @api.model
     def getLatestReleasedRevision(self):
         for product_id in self.search([('engineering_code', '=', self.engineering_code)], order="engineering_code desc"):
@@ -796,7 +852,7 @@ class PlmComponent(models.Model):
             defaults['state'] = status
             exclude_statuses = ['draft', 'released', 'undermodify', 'obsoleted']
             include_statuses = ['confirmed']
-            comp_obj.commonWFAction(status, action, doc_action, defaults, exclude_statuses, include_statuses)
+            comp_obj.commonWFAction(status, action, doc_action, defaults, exclude_statuses, include_statuses, recursive=False)
         return True
 
     def action_confirm(self):
@@ -821,6 +877,27 @@ class PlmComponent(models.Model):
                             ('engineering_revision', '=', revision)])
 
     def action_release(self):
+        return self._action_release()
+    
+    def action_un_release(self):
+        for product_product_id in self:
+            body ="""
+                FORCE draft action from super plm admin user !!!
+                data could be not as expected !!!
+            """
+            product_product_id.message_post(body=body)
+            product_product_id.state='draft'
+        
+    def action_un_release_release(self):
+        for product_product_id in self:
+            body ="""
+                FORCE release action from super plm admin user !!!
+                data could be not as expected !!!
+            """
+            product_product_id.message_post(body=body)
+            product_product_id.state='released'
+                
+    def _action_release(self):
         """
            action to be executed for Released state
         """
@@ -829,7 +906,7 @@ class PlmComponent(models.Model):
             product_tmpl_ids = []
             defaults = {}
             exclude_statuses = ['released', 'undermodify', 'obsoleted']
-            include_statuses = ['confirmed']
+            include_statuses = self.env.context.get("PLM_STATE_RELEASE" ,['confirmed'])
             errors, product_ids = comp_obj._get_recursive_parts(exclude_statuses, include_statuses)
             children_products = product_ids.copy()
             if len(product_ids) < 1 or len(errors) > 0:
@@ -850,11 +927,11 @@ class PlmComponent(models.Model):
                     old_revision.write(defaults)
                     status_lable = dict_status.get(defaults.get('state', ''), '')
                     old_revision.wf_message_post(body=_('Status moved to: %s by %s.' % (status_lable, self.env.user.name)))
+                productBrw._action_ondocuments('release', include_statuses)
             defaults['engineering_writable'] = False
             defaults['state'] = 'released'
             defaults['release_user'] = self.env.uid
             defaults['release_date'] = datetime.now()
-            self.browse(product_ids)._action_ondocuments('release', include_statuses)
             for currentProductId in allProdObjs:
                 if not currentProductId.release_date:
                     currentProductId.release_date = datetime.now()
@@ -862,13 +939,13 @@ class PlmComponent(models.Model):
                 if currentProductId.id not in self.ids:
                     children_product_to_emit.append(currentProductId.id)
                 product_tmpl_ids.append(currentProductId.product_tmpl_id.id)
-            self.browse(children_product_to_emit).perform_action('release')
-            self.browse(children_product_to_emit).write(defaults)
-            objIds = self.env['product.template'].browse(product_tmpl_ids)
-            for objId in objIds:
+            if children_product_to_emit:
+                self.browse(children_product_to_emit).perform_action('release')
+                self.browse(children_product_to_emit).write(defaults)
+            for objId in self.env['product.template'].browse(product_tmpl_ids):
                 objId.write(defaults)
                 status_lable = dict_status.get(defaults.get('state', ''), '')
-                self.browse(product_ids).wf_message_post(body=_('Status moved to: %s by %s.' % (status_lable, self.env.user.name)))
+            self.browse(product_ids).wf_message_post(body=_('Status moved to: %s by %s.' % (status_lable, self.env.user.name)))
             comp_obj.write(defaults)
         return True
 
@@ -909,22 +986,28 @@ class PlmComponent(models.Model):
             include_statuses = ['obsoleted']
             comp_obj.commonWFAction(status, action, doc_action, defaults, exclude_statuses, include_statuses)
         return True
-
-    def perform_action(self, action):
-        actions = {'reactivate': self.action_reactivate,
+    
+    @property
+    def action_functions(self):
+        return {'reactivate': self.action_reactivate,
                    'obsolete': self.action_obsolete,
                    'release': self.action_release,
                    'confirm': self.action_confirm,
                    'draft': self.action_draft}
-        toCall = actions.get(action)
+        
+    def perform_action(self, action):
+        toCall = self.action_functions.get(action)
         return toCall()
 
-    def commonWFAction(self, status, action, doc_action, defaults=[], exclude_statuses=[], include_statuses=[]):
+    def commonWFAction(self, status, action, doc_action, defaults=[], exclude_statuses=[], include_statuses=[], recursive=True):
         product_product_ids = []
         product_template_ids = []
-        userErrors, allIDs = self._get_recursive_parts(exclude_statuses, include_statuses)
-        if userErrors:
-            raise UserError(userErrors)
+        if recursive:
+            userErrors, allIDs = self._get_recursive_parts(exclude_statuses, include_statuses)
+            if userErrors:
+                raise UserError(userErrors)
+        else:
+            allIDs = self.id
         allIdsBrwsList = self.browse(allIDs)
         allIdsBrwsList = allIdsBrwsList.filtered(lambda x: x.engineering_code not in [False, ''])
         allIdsBrwsList._action_ondocuments(doc_action, include_statuses)
@@ -936,18 +1019,18 @@ class PlmComponent(models.Model):
             defaults['workflow_date'] = datetime.now()
             currId.write(defaults)
         if action:
-            product_ids = self.browse(product_product_ids)
-            product_ids.perform_action(action)
-            product_ids.workflow_user = self.env.uid
-            product_ids.workflow_date = datetime.now()
-        objIds = self.env['product.template'].browse(product_template_ids)
-        for objId in objIds:
-            objId.write(defaults)
+            for product_id in self.browse(product_product_ids):
+                product_id.perform_action(action)
+                product_id.workflow_user = self.env.uid
+                product_id.workflow_date = datetime.now()
+        product_template_ids = self.env['product.template'].browse(product_template_ids)
+        for product_template_id in product_template_ids:
+            product_template_id.write(defaults)
             available_status = self._fields.get('state')._description_selection(self.env)
             dict_status = dict(available_status)
             status_lable = dict_status.get(defaults.get('state', ''), '')
-            self.browse(allIDs).wf_message_post(body=_('Status moved to: %s by %s.' % (status_lable, self.env.user.name)))
-        return objIds
+        self.browse(allIDs).wf_message_post(body=_('Status moved to: %s by %s.' % (status_lable, self.env.user.name)))
+        return product_template_ids
 
 #  ######################################################################################################################################33
     def plm_sanitize(self, vals):
@@ -1264,20 +1347,27 @@ Please try to contact OmniaSolutions to solve this error, or install Plm Sale Fi
                 compBrwsList = self.search([('engineering_code', '=', engineering_code)])
                 for compBrws in compBrwsList:
                     docIds.extend(compBrws.linkeddocuments.ids)
-        return {'domain': [('id', 'in', docIds)],
-                'name': _('Related documents'),
-                'view_type': 'form',
-                'view_mode': 'tree,form',
-                'res_model': 'ir.attachment',
-                'type': 'ir.actions.act_window',
-                }
+            return {'domain': [('id', 'in', docIds)],
+                    'name': _('Related documents'),
+                    'view_type': 'form',
+                    'view_mode': 'tree,form',
+                    'res_model': 'ir.attachment',
+                    'type': 'ir.actions.act_window',
+                    'context': {'default_linkedcomponents':  [(4, compBrws.id, False)]},
+                    }
+        return {}
 
     def action_view_mos(self):
         tmplBrws = self.product_tmpl_id
         if tmplBrws:
             return tmplBrws.action_view_mos()
         logging.warning('[action_view_mos] product with id %s does not have a related template' % (self.id))
-
+    
+    def before_write_new_version(self, oldProductId, newProductId, defaults):
+        defaults = defaults.copy()
+    
+        return defaults
+    
     def NewRevision(self):
         """
             create a new revision of current component
@@ -1317,6 +1407,7 @@ Please try to contact OmniaSolutions to solve this error, or install Plm Sale Fi
                 defaults['workflow_user'] = False
                 defaults['workflow_date'] = False
                 defaults['product_tmpl_id']=new_tmpl_id.id
+                defaults = self.before_write_new_version(product_product_id, newCompBrws,defaults)
                 newCompBrws.write(defaults)
                 product_product_id.wf_message_post(body=_('Created : New Revision.'))
                 newComponentId = newCompBrws.id

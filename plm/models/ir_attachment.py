@@ -70,12 +70,46 @@ class PlmDocument(models.Model):
 
     def isLatestRevision(self):
         for docBrws in self:
-            lastdocIds = self._getlastrev(docBrws.id)
+            lastdocIds = self.sudo()._getlastrev(docBrws.id)
             for lastDocId in lastdocIds:
                 if lastDocId == docBrws.id:
                     return True
         return False
-
+    
+    @api.model
+    def check(self, mode, values=None):
+        if self.env.context.get('plm_avoid_recursion'):
+            return True
+        if self.env.is_superuser():
+            return True
+        if self:
+            self.env['ir.attachment'].flush(['is_plm','public'])
+            self._cr.execute('SELECT  id, is_plm, public FROM ir_attachment WHERE id IN %s', [tuple(self.ids)])
+            attachment_id_toCheck=[]
+            for attachment_id, is_plm, public in self._cr.fetchall():
+                if public and mode == 'read':
+                    continue
+                if is_plm:
+                    if self.env.user.has_group('plm.group_plm_integration_user'):
+                        continue            
+                    if self.env.user.has_group('plm.group_plm_view_user') and mode =='read':
+                        continue
+                    if self.env.user.has_group('plm.group_plm_readonly_released') and mode =='read':
+                        continue
+                    if self.env.user.has_group('plm.group_plm_admin'):
+                        continue
+                    raise UserError("You are managing a document that dose not belong to any PLM group.")
+                else:
+                    attachment_id_toCheck.append(attachment_id)
+            #
+            if attachment_id_toCheck:
+                super().with_context(plm_avoid_recursion=True).check(mode, values)
+                
+    def getPrintoutUrl(self):
+        self.ensure_one()
+        base_url = self.env['ir.config_parameter'].sudo().get_param('web.base.url')
+        return "%s/plm/ir_attachment_printout/%s" % (base_url, self.id) 
+            
     def get_checkout_user(self):
         lastDoc = self._getlastrev(self.ids)
         if lastDoc:
@@ -94,10 +128,13 @@ class PlmDocument(models.Model):
                 return True
         return False
 
-    
+        
     def _getlastrev(self, resIds):
+        return self.browse(resIds)._get_last_rev_no_browser()
+    
+    def _get_last_rev_no_browser(self):
         result = []
-        for objDoc in self.browse(resIds):
+        for objDoc in self:
             doc_ids = self.search([('engineering_document_name', '=', objDoc.engineering_document_name)], order='revisionid DESC')
             for doc in doc_ids:
                 result.append(doc.id)
@@ -107,12 +144,21 @@ class PlmDocument(models.Model):
         return list(set(result))
 
     
+    def browseLastRev(self):
+        self.ensure_one()
+        out = self.search([('engineering_document_name', '=', self.engineering_document_name)],
+                          order='revisionid DESC',
+                          limit=1)
+        for obj in out:
+            return obj
+        return out
+    
     def GetLastNamesFromID(self):
         """
             get the last rev
         """
         newIds = self._getlastrev(self.ids)
-        return self.browse(newIds).read(['engineering_document_name'])
+        return self.browse(newIds).mapped('name')
 
     @api.model
     def _isDownloadableFromServer(self, server_name):
@@ -246,20 +292,23 @@ class PlmDocument(models.Model):
             logging.warning('Cannot get links from %r document' % (doc_id))
             return []
         doc_brws = self.browse(doc_id)
-        doc_type = doc_brws.document_type.upper()
+        doc_type = doc_brws.document_type
         to_search = [('link_kind', 'in', ['LyTree']),
                      '|', 
                         ('parent_id', '=', doc_id),
                         ('child_id', '=', doc_id)]
         doc_rel_ids = self.env['ir.attachment.relation'].search(to_search)
         for doc_rel_id in doc_rel_ids:
-            if doc_type == '3D':
-                out.append(doc_rel_id.parent_id.id)
-            elif doc_type == '2D':
-                out.append(doc_rel_id.child_id.id)
-            else:
-                logging.warning('Cannot get related LyTree from doc_type %r' % (doc_type))
-                return []
+            if doc_type=='3d':
+                if doc_rel_id.parent_id.id==doc_id and doc_rel_id.child_id.document_type =='2d':
+                    out.append(doc_rel_id.child_id.id)
+                elif doc_rel_id.child_id.id==doc_id and doc_rel_id.parent_id.document_type =='2d':
+                    out.append(doc_rel_id.parent_id.id)
+            elif doc_type=='2d':
+                if doc_rel_id.parent_id.id==doc_id and doc_rel_id.child_id.document_type =='3d':
+                    out.append(doc_rel_id.child_id.id)
+                elif doc_rel_id.child_id.id==doc_id and doc_rel_id.parent_id.document_type =='3d':
+                    out.append(doc_rel_id.parent_id.id)
         return list(set(out))
     
     @api.model
@@ -377,21 +426,37 @@ class PlmDocument(models.Model):
                 continue
             computed.append(active_attachment_id)
             #
+            is_collectable = False
             isCheckedOutToMe, checkOutUser = ir_attachment_id.checkoutByMeWithUser()
-            isNewer = ir_attachment_id.checkNewer()
+            if not isCheckedOutToMe:
+                is_collectable = ir_attachment_id.isCollectable(hostname,
+                                                                pws_path)
             #   
             out.append({'id': active_attachment_id,
-                        'collectable': isNewer and not isCheckedOutToMe,
+                        'collectable': is_collectable,
                         'isCheckedOutToMe': isCheckedOutToMe,
                         'writable': isCheckedOutToMe,
                         'file_name': ir_attachment_id.name,
                         'write_date': ir_attachment_id.write_date,
                         'check_out_user': checkOutUser,
                         'state': ir_attachment_id.state,
-                        'zip_ids': self.getRelatedPkgTree(active_attachment_id)
+                        'zip_ids': self.getRelatedPkgTree(active_attachment_id),
+                        'is_last_version': ir_attachment_id.isLatestRevision(),
                         })
         return out                     
-                               
+    
+    def isCollectable(self, hostname, pws_path):
+        self.ensure_one()
+        out = True
+        if self.isCheckedOutByMe(): out=False
+        plm_cad_open = self.sudo().env['plm.cad.open'].getLastCadOpenByUser(self, self.env.user)
+        if plm_cad_open:
+            if plm_cad_open.hostname==hostname and plm_cad_open.pws_path==pws_path:
+                last_revision_id = self.browseLastRev()
+                if last_revision_id != last_revision_id:
+                    if last_revision_id.isCheckedOutByMe():
+                        out=False
+        return out
             
     def _data_check_files(self, targetIds, listedFiles=(), forceFlag=False, retDict=False, hostname='', hostpws=''):
         result = []
@@ -529,6 +594,7 @@ class PlmDocument(models.Model):
                 defaults['revisionid'] = newRevIndex
                 defaults['writable'] = True
                 defaults['state'] = 'draft'
+                defaults['document_type'] = oldObject.document_type
                 res = super(PlmDocument, oldObject).copy(defaults)
                 newID = res.id
                 res.revision_user = self.env.uid
@@ -743,14 +809,14 @@ class PlmDocument(models.Model):
         """
             action to be executed for Draft state
         """
-        return self.commonWFAction(True, 'draft', False)
+        return self.sudo().commonWFAction(True, 'draft', False)
 
     
     def action_confirm(self):
         """
             action to be executed for Confirm state
         """
-        return self.commonWFAction(False, 'confirmed', False)
+        return self.sudo().commonWFAction(False, 'confirmed', False)
 
     
     def action_release(self):
@@ -765,14 +831,36 @@ class PlmDocument(models.Model):
             if oldObject.ischecked_in():
                 ctx = self.env.context.copy()
                 ctx['check'] = False
-                oldObject.with_context(ctx).attachment_release_user = self.env.uid
-                oldObject.with_context(ctx).attachment_release_date = datetime.utcnow()
+                sudoobject = oldObject.with_context(ctx).sudo()
+                sudoobject.attachment_release_user = self.env.uid
+                sudoobject.attachment_release_date = datetime.utcnow()
                 to_release += oldObject
         if to_release:
-            to_release.commonWFAction(False, 'released', False)
+            to_release.sudo().commonWFAction(False, 'released', False)
         return False
-
     
+    def action_un_release(self):
+        if not self.env.user.has_group("plm.group_plm_admin_unrelease"):
+            raise UserError("You are not allowed to perform such an action ask to your PLM admin")
+        for product_product_id in self:
+            body ="""
+                FORCE draft action from super plm admin user !!!
+                data could be not as expected !!!
+            """
+            product_product_id.message_post(body=body)
+            product_product_id.with_context(check=False).state='draft'
+        
+    def action_un_release_release(self):
+        if not self.env.user.has_group("plm.group_plm_admin_unrelease"):
+            raise UserError("You are not allowed to perform such an action ask to your PLM admin")
+        for product_product_id in self:
+            body ="""
+                FORCE release action from super plm admin user !!!
+                data could be not as expected !!!
+            """
+            product_product_id.message_post(body=body)
+            product_product_id.with_context(check=False).state='draft'
+            
     def action_obsolete(self):
         """
             obsolete the object
@@ -2171,14 +2259,14 @@ class PlmDocument(models.Model):
         host_name = clientArg[1]
         host_pws = clientArg[2]
         #  generate component
-        product_product_id = self.env['product.product'].createFromProps(component_props)
+        product_product_id = self.env['product.product'].with_context(document_props=document_props).createFromProps(component_props)
         if not product_product_id:
             logging.warning("Unable to create / get product_product from %s" % component_props)
         #  generate document
-        ir_attachment_id, action = self.env['ir.attachment'].createFromProps(document_props,
-                                                                             dbThread,
-                                                                             host_name,
-                                                                             host_pws)
+        ir_attachment_id, action = self.env['ir.attachment'].with_context(component_props=component_props).createFromProps(document_props,
+                                                                                                                           dbThread,
+                                                                                                                           host_name,
+                                                                                                                           host_pws)
         if not ir_attachment_id:
             logging.warning("Unable to create / get ir_attachment from %s" % document_props)
         #  generate link
@@ -2779,4 +2867,42 @@ class PlmDocument(models.Model):
         action = self.env.ref('plm.action_report_doc_structure').report_action(self)
         action.update({'close_on_report_download': True})
         return action
+    
+    def _read_group_allowed_fields(self):
+        ret = super()._read_group_allowed_fields()
+        ret.extend(['state',
+                    'engineering_document_name',
+                    'write_uid',
+                    'revisionid',
+                    'checkout_user',
+                    'description',
+                    'write_date',
+                    'display_name',
+                    'is_linkedcomponents',
+                    'used_for_spare',
+                    '__last_update',
+                    'preview',
+                    'document_type'])
+        return ret
+    
+    def convert_printout_attachment(self):
+        #go_on = self.env.context("PLM_FORCE")
+        # if not go_on:
+        #     raise UserError("Operation not permetted")
+        
+        attachment_ids= self.search([('document_type','=','2d'),
+                                     ('printout','=',False)])
+        total_to_update=len(attachment_ids)
+        for index, attachemnt_id in enumerate(attachment_ids):
+            logging.info("%s/%s Updating attachment" % (total_to_update,index))
+            self._cr.execute("select printout from ir_attachment where id=%s" % attachemnt_id.id )
+            for row in self._cr.fetchall():
+                content = row[0]
+                if content:
+                    attachemnt_id.printout = content
+            if index%1000==0:
+                self._cr.commit()
+            
+            
+        
 # vim:expandtab:smartindent:tabstop=4:softtabstop=4:shiftwidth=4:

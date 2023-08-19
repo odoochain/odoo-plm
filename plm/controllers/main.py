@@ -1,14 +1,19 @@
 # -*- coding: utf-8 -*-
-import functools
-import base64
-import json
-import logging
 import os
+import json
+import base64
+import copy
+import logging
+import functools
+from datetime import datetime
+from dateutil import tz
+
 from odoo import _
 from odoo.http import Controller, route, request, Response
-import copy
 from odoo.tools.misc import DEFAULT_SERVER_DATETIME_FORMAT
-
+from odoo.addons.plm.models.utils import getEmptyDocument
+from odoo.addons.plm.models.utils import packDocuments
+from odoo.addons.plm.models.utils import BookCollector
 
 def webservice(f):
     @functools.wraps(f)
@@ -203,17 +208,17 @@ class UploadDocument(Controller):
         related_attachment_id = eval(related_attachment_id)
         if doc_name:
             value1 = kw.get('file_stream').stream.read()
-            ir_attachment_id  = request.env['ir.attachment'].search([('engineering_document_name',  '=', doc_name),
-                                                                     ('revisionid', '=', doc_rev)])
+            ir_attachment_id  = request.env['ir.attachment'].sudo().search([('engineering_document_name',  '=', doc_name),
+                                                                             ('revisionid', '=', doc_rev)])
             to_write = {'datas': base64.b64encode(value1),
-                        'name': doc_name,
+                        'name': kw.get('filename',doc_name),
                         'engineering_document_name': doc_name,
                         'revisionid': doc_rev}
             link_id =  request.env['ir.attachment.relation']
             new_context = request.env.context.copy()
             new_context['backup'] = False
             new_context['check'] = False    # Or zip file will not be updated if in check-in
-            contex_brw = request.env['ir.attachment'].with_context(new_context)
+            contex_brw = request.env['ir.attachment'].with_context(new_context).sudo()
             to_write['is_plm'] = True
             if not ir_attachment_id:
                 ir_attachment_id = contex_brw.create(to_write)
@@ -229,7 +234,12 @@ class UploadDocument(Controller):
                                                               'link_kind': 'ExtraTree'})    
             if product_id:
                 product_id = request.env['product.product'].browse(product_id)
-                request.env['plm.component.document.rel'].createFromIds(product_id, ir_attachment_id)           
+                request.env['plm.component.document.rel'].createFromIds(product_id, ir_attachment_id)
+            else:
+                if related_attachment_id:
+                    for product_id in request.env['ir.attachment'].browse(related_attachment_id).linkedcomponents:
+                        request.env['plm.component.document.rel'].createFromIds(product_id, ir_attachment_id)
+                        break
             return Response('Extra file Upload succeeded', status=200)
         logging.info('Extra file no upload %r' % (ir_attachment_id))
         return Response('Extra file Failed upload', status=400)
@@ -240,4 +250,87 @@ class UploadDocument(Controller):
         ir_attachement = request.env['ir.attachment'].sudo()
         for record in ir_attachement.search_read([('id','=', id)], ['preview']):
             return base64.b64decode(record.get('preview'))
+
+    @route('/plm/product_product_preview/<int:product_id>', type='http', auth='user', methods=['GET'], csrf=False)
+    @webservice
+    def get_pp_preview(self, product_id):
+        product_product_sudo = request.env['product.product'].sudo()
+        for product_product_id in product_product_sudo.search([('id','=', product_id)]):
+            return base64.b64decode(product_product_id.image_1920)
         
+    @route('/plm/ir_attachment_printout/<int:id>', type='http', auth='user', methods=['GET'], csrf=False)
+    @webservice
+    def get_printout(self, id):
+        try:
+            ir_attachement = request.env['ir.attachment'].sudo()
+            for ir_attachement_id in ir_attachement.search_read([('id','=', id)],
+                                                                ['printout','name']):
+                
+                    data = base64.b64decode(ir_attachement_id.get('printout'))
+                    headers = [('Content-Type', 'application/pdf'),
+                               ('Content-Length', len(data)),
+                               ('Content-Disposition', 'inline; filename="%s"' % ir_attachement_id.get('name','no_name') + '.pdf')]
+                    return request.make_response(data, headers)
+        except Exception as ex:
+            return Response(ex, json.dumps({}),status=500)
+
+    def commonInfos(self):
+        docRepository = request.env['ir.attachment']._get_filestore()
+        to_zone = tz.gettz(request.env.context.get('tz', 'Europe/Rome'))
+        from_zone = tz.tzutc()
+        dt = datetime.now()
+        dt = dt.replace(tzinfo=from_zone)
+        localDT = dt.astimezone(to_zone)
+        localDT = localDT.replace(microsecond=0)
+        msg = "Printed by '%(print_user)s' : %(date_now)s State: %(state)s"
+        msg_vals = {
+            'print_user': 'user_id.name',
+            'date_now': localDT.ctime(),
+            'state': 'doc_obj.state',
+                }
+        mainBookCollector = BookCollector(jumpFirst=False,
+                                          customText=(msg, msg_vals),
+                                          bottomHeight=10,
+                                          poolObj=request.env)
+        return docRepository, mainBookCollector
+    
+    def getDocument(self, product, check):
+        out = []
+        for doc in product.linkeddocuments:
+            if check:
+                if doc.state in ['released', 'undermodify']:
+                    out.append(doc)
+                continue
+            out.append(doc)
+        return out
+    
+    @route('/plm/get_production_printout/<string:product>/<int:level>/<int:checkState>', type='http', auth='user', methods=['GET'], csrf=False)
+    @webservice
+    def get_production_printout(self, product, level=0, checkState=False):
+        try:
+            product_product_sudo = request.env['product.product'].sudo()
+            products_ids = product_product_sudo.search([('id','=', product)])
+            docRepository, mainBookCollector = self.commonInfos()
+            documents = []
+            for product in products_ids:
+                documents.extend(self.getDocument(product, checkState))
+                if level > -1:
+                    for childProduct in product._getChildrenBom(product, level):
+                        childProduct = product_product_sudo.browse(childProduct)
+                        documents.extend(self.getDocument(childProduct, checkState))
+                if len(documents) == 0:
+                    content = getEmptyDocument()
+                else:
+                    documentContent = packDocuments(docRepository,
+                                                    documents,
+                                                    mainBookCollector)
+                    content = documentContent[0]
+                headers = [('Content-Type', 'application/pdf'),
+                           ('Content-Length', len(content)),
+                           ('Content-Disposition', 'inline; filename="%s_%s_%s"' % (product.engineering_code,
+                                                                                    product.engineering_revision,
+                                                                                    '.pdf'))]
+                return request.make_response(content, headers)
+        except Exception as ex:
+            return Response(ex, json.dumps({}),status=500)
+ 

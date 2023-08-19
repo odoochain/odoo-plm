@@ -55,6 +55,9 @@ class plm_spareChoseLanguage(models.TransientModel):
             out.append((objBrowse.code, objBrowse.name))
         return out
 
+    def get_report_name(self,brwProduct, lang):
+        return brwProduct.name + "_" + lang + "_manual.pdf"
+        
     def print_report(self):
         self.ensure_one()
         lang = self.lang
@@ -63,18 +66,27 @@ class plm_spareChoseLanguage(models.TransientModel):
             mids = modobj.search([('state', '=', 'installed')])
             if not mids:
                 raise UserError("Language not Installed")
-            reportName = 'plm_spare.report_product_product_spare_parts_pdf'
+            reportName = 'report.plm_spare.pdf_all' #'plm_spare.report_product_product_spare_parts_pdf'
             if self.onelevel:
-                reportName = 'plm_spare.report_product_product_spare_parts_pdf_one'
+                reportName = 'report.plm_spare.pdf_one' #'plm_spare.report_product_product_spare_parts_pdf_one'
             productProductId = self.env.context.get('active_id')
             newContext = self.env.context.copy()
             newContext['lang'] = lang
             newContext['force_report_rendering']=True
-            stream, fileExtention = self.env.ref(reportName).sudo().with_context(newContext).render_qweb_pdf(productProductId)
-            self.datas = base64.encodestring(stream)
+            # stream, fileExtention = self.env.ref(reportName).sudo().with_context(newContext)._render_qweb_pdf(reportName,
+            #                                                                                                   productProductId)
+
+            #report_context =  self.env.ref(reportName).sudo().with_context(newContext)
+            #report_context._render_qweb_pdf_prepare_streams(reportName, data={'report_type': 'pdf'}, res_ids=productProductId)
+            #self.datas = base64.encodestring(stream)
+            
             tProductProduct = self.env['product.product']
             brwProduct = tProductProduct.browse(productProductId)
-            fileName = brwProduct.name + "_" + lang + "_manual." + fileExtention
+            report_context = self.env[reportName].sudo().with_context(newContext)
+            stream = report_context._create_spare_pdf(brwProduct)
+            self.datas =  base64.encodebytes(stream)
+            fileName = brwProduct.name + "_" + lang + "_manual.pdf"
+            fileName = self.get_report_name(brwProduct, lang)
             self.datas_name = fileName
             return {'context': self.env.context,
                     'view_type': 'form',
@@ -130,7 +142,10 @@ class plm_bomChoseLanguage(models.TransientModel):
         for objBrowse in modobj.search([]):
             out.append((objBrowse.code, objBrowse.name))
         return out
-
+    
+    def get_report_name(self,brwProduct, lang, fileExtention):
+        return brwProduct.product_tmpl_id.name + "_" + lang + "_bom." + fileExtention
+    
     def print_report(self):
         self.ensure_one()
         lang = self.lang
@@ -143,12 +158,12 @@ class plm_bomChoseLanguage(models.TransientModel):
             newContext = self.env.context.copy()    # Used to update and generate pdf
             newContext['lang'] = lang
             newContext['force_report_rendering']=True
-            stream, fileExtention = self.env.ref(reportName).sudo().with_context(newContext)._render_qweb_pdf(self.ids)
             bomId = self.env.context.get('active_id')
+            stream, fileExtention = self.env.ref(reportName).sudo().with_context(newContext)._render_qweb_pdf(res_ids=bomId)
             self.datas = base64.b64encode(stream)
             tMrpBom = self.env['mrp.bom']
             brwProduct = tMrpBom.browse(bomId)
-            fileName = brwProduct.product_tmpl_id.name + "_" + lang + "_bom." + fileExtention
+            fileName = self.get_report_name(brwProduct, lang, fileExtention)
             self.datas_name = fileName
             return {'context': self.env.context,
                     'view_type': 'form',
