@@ -71,6 +71,7 @@ class ProductProduct(models.Model):
                 'name': _('Document'),
                 'view_type': 'form',
                 'view_mode': 'form',
+                'view_id': self.env.ref("plm.view_attachment_form_plm_hinerit").id,
                 'res_model': 'ir.attachment',
                 'target': 'new',
                 'res_id': ir_attachment_id,
@@ -217,32 +218,6 @@ class ProductProduct(models.Model):
                     product_product_id.std_value3 = False
                 #
             product_product_id.on_change_stdvalue()
-            
-                
-    # @api.onchange('std_description')
-    # def on_change_stddesc(self):
-    #     if self.std_description:
-    #         if self.std_description.description:
-    #             self.name = self.std_description.description
-    #             if self.std_description.umc1:
-    #                 self.std_umc1 = self.std_description.umc1
-    #             else:
-    #                 self.std_umc1=""
-    #                 self.std_value1=False
-    #             if self.std_description.umc2:
-    #                 self.std_umc2 = self.std_description.umc2
-    #             else:
-    #                 self.std_umc2=""
-    #                 self.std_value2=False
-    #             if self.std_description.umc3:
-    #                 self.std_umc3 = self.std_description.umc3
-    #             else:
-    #                 self.std_umc3=""
-    #                 self.std_value3=False
-    #             if self.std_description.unitab:
-    #                 self.name = self.name + " " + self.std_description.unitab
-
-                
 
     @api.onchange('std_value1', 'std_value2', 'std_value3', 'std_umc1','std_umc2','std_umc3')
     def on_change_stdvalue(self):
@@ -342,7 +317,8 @@ class ProductProduct(models.Model):
             mrp_bom_line_ids = self.env['mrp.bom.line'].search(bom_line_filter,
                                                                limit=1)
             for mrp_bom_line_id in mrp_bom_line_ids:
-                return mrp_bom_line_id.bom_id
+                if product_product_id.id!=mrp_bom_line_id.bom_id.product_tmpl_id.product_variant_id.id:
+                    return mrp_bom_line_id.bom_id
         return self.env['mrp.bom']
 
     def _packvalues(self, fmt, label=False, value=False):
@@ -439,20 +415,27 @@ class ProductProduct(models.Model):
                     }
 
     @api.model
-    def _getChildrenBom(self, component, level=0, currlevel=0, bom_type=False):
+    def _getChildrenBom(self,
+                        product_product_id,
+                        level=0,
+                        currlevel=0,
+                        bom_type=False):
         """
-            Return a flat list of each child, listed once, in a Bom ( level = 0 one level only, level = 1 all levels)
+            Return a flat list of each child, listed once, in a Bom 
+            :level = [ 0 one level only, 1 all levels]
+            :currlevel starting level for the bom
+            :bom_type type bom calculation
         """
         result = []
         bufferdata = []
         if level <= currlevel and level > 0:
             return bufferdata
-        for bomid in component.product_tmpl_id.bom_ids:
+        for bomid in product_product_id.product_tmpl_id.bom_ids:
             if bom_type:
                 if bomid.type != bom_type:
                     continue
             for bomline in bomid.bom_line_ids:
-                children = self._getChildrenBom(component=bomline.product_id,
+                children = self._getChildrenBom(product_product_id=bomline.product_id,
                                                 level=level,
                                                 currlevel=currlevel + 1,
                                                 bom_type=bom_type)
@@ -460,7 +443,32 @@ class ProductProduct(models.Model):
                 bufferdata.append(bomline.product_id.id)
         result.extend(bufferdata)
         return list(set(result))
-
+    
+    def getLeafBom(self, bom_type='normal'):
+        """
+        get only the leaf of the bom
+        :product_product_id <product_product>
+        :bom_type ['normal','kit','engineering']
+        :return: [<product_product>,]
+        """
+        out = []
+        computed_bom = []
+        def _getLeafBom(parent_product_ids, bom_type='normal'):
+            for product_product_id in parent_product_ids:
+                has_bom=False
+                for mrp_bom_id in product_product_id.product_tmpl_id.bom_ids.filtered(lambda x : x.type==bom_type):
+                    has_bom=True
+                    if mrp_bom_id in computed_bom:
+                        continue
+                    else:
+                        computed_bom.append(mrp_bom_id)
+                    for product_id in mrp_bom_id.bom_line_ids.mapped("product_id"):
+                        _getLeafBom(product_id,bom_type=bom_type)
+                if not has_bom and product_product_id not in out:
+                    out.append(product_product_id)
+        _getLeafBom(self)
+        return out
+    
     def summarize_level(self, recursion=False, flat=False, level=1, summarize=False, parentQty=1, bom_type=False):
         out = {}
         for product_product_id in self:
@@ -663,24 +671,53 @@ class ProductProduct(models.Model):
             self._create_normalBom(prodId, processedIds)
         self.message_post(body=_('Created Normal Bom.'))
         return False
+    
+    def _jump_document_wf(self,
+                          documentBrws,
+                          check_state):
+        """
+        this function is here in order to customize the document workflow
+        :documentBrws     <ir_attachment> 
+        :check_in_check   bool shuld I move also the document
+        :return: True will jump the workflow for the current document / False will performe the workflow
+        """
+        return False
 
-    def checkWorkflow(self, docInError, linkeddocuments, check_state):
+    def checkWorkflow(self,
+                      docInError,
+                      linkeddocuments,
+                      check_state,
+                      check_in_check=True):
         docIDs = []
         attachment = self.env['ir.attachment']
         for documentBrws in linkeddocuments:
             if documentBrws.engineering_state in check_state:
-                if documentBrws.is_checkout:
-                    docInError.append(_("Document %r : %r is checked out by user %r") % (documentBrws.name, documentBrws.engineering_revision, documentBrws.checkout_user))
+                if check_in_check and documentBrws.is_checkout:
+                    if check_in_check:
+                        logging.info(f"{documentBrws.name} workflow jump for custom rule check_in_check")
+                    else:
+                        docInError.append(_(f"Document {documentBrws.name} : {documentBrws.engineering_revision} is checked out by user {documentBrws.checkout_user}") )
+                    continue
+                if self._jump_document_wf(documentBrws,check_state):
                     continue
                 docIDs.append(documentBrws.id)
                 if documentBrws.is3D():
                     doc_layout_ids = documentBrws.getRelatedLyTree(documentBrws.id)
-                    docIDs.extend(self.checkWorkflow(docInError, attachment.browse(doc_layout_ids), check_state))
+                    docIDs.extend(self.checkWorkflow(docInError,
+                                                     attachment.browse(doc_layout_ids),
+                                                     check_state,
+                                                     check_in_check=check_in_check))
                     raw_doc_ids = documentBrws.getRelatedRfTree(documentBrws.id, recursion=True)
-                    docIDs.extend(self.checkWorkflow(docInError, attachment.browse(raw_doc_ids), check_state))
+                    docIDs.extend(self.checkWorkflow(docInError,
+                                                     attachment.browse(raw_doc_ids),
+                                                     check_state,
+                                                     check_in_check=check_in_check))
         return list(set(docIDs))
 
-    def _action_ondocuments(self, action_name, include_statuses=[]):
+    def _action_ondocuments(self,
+                            action_name, 
+                            include_statuses=[],
+                            check_in_check=True):
         """
             move workflow on documents having the same state of component
         """
@@ -691,10 +728,13 @@ class ProductProduct(models.Model):
                 check_state = oldObject.engineering_state
             else:
                 check_state = CONFIRMED_STATUS
-            docIDs.extend(self.checkWorkflow(docInError, oldObject.linkeddocuments, include_statuses+[check_state]))
+            docIDs.extend(self.checkWorkflow(docInError,
+                                             oldObject.linkeddocuments,
+                                             include_statuses+[check_state],
+                                             check_in_check=check_in_check))
         if docInError:
             msg = _("Error on workflow operation")
-            for e in docInError:
+            for e in list(set(docInError)):
                 msg = msg + "\n" + e
             msg = msg + _("\n\nCheck-In All the document in order to proceed !!")
             raise UserError(msg)
@@ -730,6 +770,10 @@ class ProductProduct(models.Model):
                                    status):
         """
         Customization use this function for further customizations on product workflow
+        :ir_attachment_ids [<ir_attachment>]
+        :status str state to move to
+        REMARK:
+            the current status is on the self object and on the attachment ids
         """
         return
 
@@ -828,13 +872,18 @@ class ProductProduct(models.Model):
             product_product_id.commonWFAction(RELEASED_STATUS,
                                               [OBSOLATED_STATUS])
         return True
-
+        
     def commonWFAction(self,
                        status,
                        include_statuses=[],
-                       recursive=False):
+                       recursive=False,
+                       check_in_check=True):
         performed_ids=[]
-        def _commonWFAction(obj, status, include_statuses=[],recursive=False):
+        def _commonWFAction(obj,
+                            status,
+                            include_statuses=[],
+                            recursive=False,
+                            check_in_check=True):
             for product_product_id in obj:
                 #
                 # ansure no recursion loop
@@ -850,11 +899,17 @@ class ProductProduct(models.Model):
                     if len(errors) > 0:
                         raise UserError(errors)
                     for child_product_id in product_ids:
-                        _commonWFAction(child_product_id, status, include_statuses)
-                product_product_id._action_ondocuments(status, include_statuses)
+                        _commonWFAction(child_product_id,
+                                        status,
+                                        include_statuses,
+                                        recursive,
+                                        check_in_check=check_in_check)
+                product_product_id._action_ondocuments(status,
+                                                       include_statuses,
+                                                       check_in_check=check_in_check)
                 product_product_id.product_tmpl_id.move_to_state(status)
             return True
-        return _commonWFAction(self, status, include_statuses, recursive)
+        return _commonWFAction(self, status, include_statuses, recursive,check_in_check=check_in_check)
 
 #  ######################################################################################################################################33
     def plm_sanitize(self, vals):
@@ -1124,7 +1179,11 @@ Please try to contact OmniaSolutions to solve this error, or install Plm Sale Fi
                     readDict = translationBrwsList[0].read(['value'])
                     values[fieldName] = readDict.get('value', '')
         return values
-
+    
+    @api.model
+    def get_all_translation(self, object_id, fields):
+        return self.product_tmpl_id.get_all_translation(object_id, fields)
+    
     def action_rev_docs(self):
         """
             This function is called by the button on component view, section LinkedDocuments
@@ -1685,8 +1744,15 @@ Please try to contact OmniaSolutions to solve this error, or install Plm Sale Fi
             elif "plm_m2o_" + attribute_name in productAttribute:
                 value = productAttribute["plm_m2o_" + attribute_name]
                 sanitaized_attributes[attribute_name] = self.env['product.template'].translate_plm_m2o_name([self.env['product.template'],
-                                                                                                             self.env['product.product']], attribute_name, value)
-                
+                                                                                                            self.env['product.product']], attribute_name, value)
+        language_attrs = {}
+        for key in list(filter(lambda x: '@-@-@' in x,list(productAttribute.keys()))):
+            field_name, language = key.split('@-@-@')
+            if language not in language_attrs:
+                language_attrs[language] = {field_name: productAttribute[key]}
+            else:
+                language_attrs[language][field_name] = productAttribute[key]
+
         engineering_name = sanitaized_attributes.get('engineering_code', False)
         if not engineering_name:
             return False
@@ -1703,6 +1769,8 @@ Please try to contact OmniaSolutions to solve this error, or install Plm Sale Fi
                 out_product_produc_id.write(sanitaized_attributes)
         else:  # write
             out_product_produc_id = self.create(sanitaized_attributes)
+        for lang, translated_values in language_attrs.items():
+            out_product_produc_id.with_context(lang=lang).write(translated_values)
         return out_product_produc_id
 
 
@@ -1799,7 +1867,8 @@ Please try to contact OmniaSolutions to solve this error, or install Plm Sale Fi
         #    
         populate(self)
         return out
-
+        
+        
 class PlmTemporayMessage(models.TransientModel):
     _name = "plm.temporary.message"
     _description = "Temporary Class"
