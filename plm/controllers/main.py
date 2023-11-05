@@ -177,7 +177,7 @@ class UploadDocument(Controller):
                                 headers={'file_name': pkg_brws.name})
             return Response(status=200)
         except Exception as ex:
-            return Response(ex, json.dumps({}),status=500)
+            return Response(f"{ex}", status=500)
 
     @route('/plm_document_upload/get_files_write_time', type='http', auth='user', methods=['get'], csrf=False)
     @webservice
@@ -188,10 +188,13 @@ class UploadDocument(Controller):
             out = []
             for attachment_id in ir_attachment_ids:
                 attachment_brws = attachment.browse(attachment_id)
-                out.append((attachment_brws.id, attachment_brws.name, attachment_brws.write_date.strftime(DEFAULT_SERVER_DATETIME_FORMAT)))
+                out.append((attachment_brws.id,
+                            attachment_brws.name,
+                            attachment_brws.write_date.strftime(DEFAULT_SERVER_DATETIME_FORMAT)))
             return Response(json.dumps(out))
         except Exception as ex:
-            return Response(ex, json.dumps([]),status=500)
+            logging.error(ex)
+            return Response(f"{ex}", status=500)
 
     @route('/plm_document_upload/extra_file', type='http', auth='user', methods=['POST'], csrf=False)
     @webservice
@@ -244,22 +247,24 @@ class UploadDocument(Controller):
         ir_attachement = request.env['ir.attachment'].sudo()
         for record in ir_attachement.search_read([('id','=', id)], ['preview']):
             return base64.b64decode(record.get('preview'))
-        
+
+
     @route('/plm/ir_attachment_printout/<int:id>', type='http', auth='user', methods=['GET'], csrf=False)
     @webservice
     def get_printout(self, id):
         try:
-            ir_attachement = request.env['ir.attachment'].sudo()
-            for ir_attachement_id in ir_attachement.search_read([('id','=', id)],
-                                                                ['printout','name']):
-                    print_out_data = ir_attachement_id.get('printout')
+            for ir_attachement_id in request.env['ir.attachment'].sudo().browse(id):
+                if ir_attachement_id.printout:
+                    print_out_data = request.env['report.plm.ir_attachment_pdf']._render_qweb_pdf(ir_attachement_id)
+                    print_out_data = print_out_data[0]
                     if print_out_data: 
-                        data = base64.b64decode(print_out_data)
                         headers = [('Content-Type', 'application/pdf'),
-                                   ('Content-Length', len(data)),
-                                   ('Content-Disposition', 'inline; filename="%s"' % ir_attachement_id.get('name','no_name') + '.pdf')]
-                        return request.make_response(data, headers)
+                                   ('Content-Length', len(print_out_data)),
+                                   ('Content-Disposition', f'inline; filename="{ir_attachement_id.engineering_code}_{ir_attachement_id.engineering_revision}.pdf"')]
+                        return request.make_response(print_out_data, headers)
                     else:
-                        return request.not_found("Pdf document %s not Available" % ir_attachement_id.get('name','no_name'))
+                        return request.not_found(f"Pdf document {ir_attachement_id.engineering_code} not Available")
+                else:
+                    return request.not_found(f"Pdf document {ir_attachement_id.engineering_code} not Available")
         except Exception as ex:
-            return Response(ex, json.dumps({}),status=500)
+            return Response(f"{ex}", status=500)
